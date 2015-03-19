@@ -138,19 +138,21 @@ def rankProfessors(adjlist,ssprobs,keywords,**kwargs):
     profs=keywords
     profdict={}
     for i in profs:
-        profdict[i] = 0
+        profdict[i] = 0.
     url_list=adjlist.keys()
     for url in url_list:
         page = requests.get(url)
         text = page.text
         page.close()
         for p in profs:
-            profdict[p] += ssprobs[url_list.index(url)] if re.search("\b{}\b".format(p),text)else 0
-    prof_ranks = [pair[0] for pair in sorted(profdict.items(), key=lambda item: item[1], reverse=True)]
+            profdict[p] += ssprobs[url_list.index(url)] if " " + p + " " in text else 0
+        #for p in profs:
+            #profdict[p] += ssprobs[url_list.index(url)] if re.search("\b{}\b".format(p),text,re.I) else 0
+    prof_ranks = [pair for pair in sorted(profdict.items(), key=lambda item: item[1], reverse=True)]
     if kwargs.get('verbose')>0:
         for i in range(len(prof_ranks)):
             print "%d: %s" % (i+1, prof_ranks[i])
-    return profdict.items()
+    return prof_ranks
 
 def steadystate(transition_matrix):
     """
