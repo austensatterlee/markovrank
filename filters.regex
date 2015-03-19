@@ -1,0 +1,4 @@
+.*\.eecs\.berkeley\.edu.*
+.*(\.html|\.htm|\.php|)$
+#^http.*
+#.*(!login.html)$

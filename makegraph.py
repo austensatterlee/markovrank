@@ -1,137 +1,96 @@
-import re, sys, os, urlparse, requests, time
 from bs4 import BeautifulSoup
+import requests
 import numpy as np
-#import matplotlib.pyplot as plt
-import cPickle
-import argparse
+import cPickle,argparse,time
+from collections import Counter
+from collections import deque
+import sys,traceback,os,re
+from urlparse import urlparse,urljoin,urldefrag
 
 bad_urls = ['http://bgess.berkeley.edu/%7Ensbejr/index.html','http://superior.berkeley.edu/Berkeley/Buildings/soda.html','http://physicalplant.berkeley.edu/','http://www.eecs.berkeley.edu/Deptonly/Rosters/roster.room.cory.html',' http://www.eecs.berkeley.edu/Resguide/admin.shtml#aliases','http://www.eecs.berkeley.edu/department/EECSbrochure/c1-s3.html']
 bad_filenames=['login.html','admin.html']
 acceptable_extensions=['.html','.htm','.php','.asp','.aspx','']
 acceptable_schemes=['http']
 
-def verify_link(linkurl,url_start,**kwargs):
+def scrape(**kwargs):
     """
-    Applies a variety of tests to determine whether a link is safe
+    Usage:
 
-    """
-    origurlparts = urlparse.urlparse(url_start)
-    linkurlparts = urlparse.urlparse(linkurl)
-    linkfilename = os.path.split(linkurlparts.path)[1]
-    trace=[True]
-    okay=linkurlparts.netloc==origurlparts.netloc
-    trace.append(okay)
-    okay&=linkurlparts.scheme in acceptable_schemes
-    trace.append(okay)
-    okay&=os.path.splitext(linkurl)[1] in acceptable_extensions
-    trace.append(okay)
-    okay&=not (linkurl in bad_urls or "iris" in linkurl or "Deptonly" in linkurl)
-    trace.append(okay)
-    okay&=linkfilename not in bad_filenames
-    trace.append(okay)
-    if kwargs.get('verbose')>2:
-        print linkurl,trace
-    return okay
+        scrape(url,patterns[,maxdepth=1][,verbose=0])
 
-def parse_links(url, url_start,**kwargs):
-    """
-    This function will return all the urls on a page, and return the start url if there is an error or no urls
+    Keyword Arguments:
+    url
+    patterns
 
     """
-    url_list = []
-    page = None
-    try:
-        #open, read, and parse the text using beautiful soup
-        page = requests.get(url)
-        text = page.text
-        page.close()
-        soup = BeautifulSoup(text,'lxml')
+    rooturl,patterns,maxdepth,verbose=map(kwargs.get,'url,patterns,maxdepth,verbose'.split(','))
 
-        #find all hyperlinks using beautiful soup
-        for tag in soup.findAll('a', href=True):
-            #concatenate the base url with the path from the hyperlink
-            linkurl = urlparse.urljoin(url, tag['href'])
-            linkurl = urlparse.urldefrag(linkurl)[0]
-            #we want to stay in the berkeley domain. This becomes more relevant later
-            okay=verify_link(linkurl,url_start,**kwargs)
-            if okay:
-                url_list.append(linkurl)
-        if len(url_list) == 0:
-            return [url_start]
-        return url_list
-    except IOError,e:
-        if kwargs.get('verbose')>0:
-            print "Error when scraping link on page {}: {}".format(page,e)
-        return
-
-def dfs(url_start,**kwargs):
-    """
-    Generate an adjacency list from the outgoing links on the given web page.
-
-    Keyword arguments:
-    maxdepth - limits the recursion limit of the graph search
-    cachefile - specifies a filename to be used as a cache (to save time on large repeated calls)
-    reset_cache - refreshes the cache by forcing each query to go to the web
-
-    Returns a mapping from parent_url->list(child_urls).
-    """
-
-    #special implementation of DFS where I give it a page and I return
-    # a list of all verticies in the graph
-    maxdepth=kwargs.get('maxdepth')
-    cachefile=kwargs.get('cachefile')
-    resetcache=kwargs.get('reset_cache')
-    verbose = kwargs.get('verbose')
-    __pagecache__ = readCache(cachefile,resetcache,verbose)
-
-    i=0
-    depthmap = {url_start:0}
-    visited,stack={},[url_start]
-    statusstr=""
-    if verbose>0:
-        print "Max depth: {}, cachefile: {}, cache reset: {}".format(maxdepth,cachefile,resetcache)
+    __pagecache__ = readCache(kwargs.get('cachefile'),kwargs.get('reset_cache'))
+    patterns=map(re.compile,patterns)
+    history=set()
+    targetlist=[]
+    stack=deque([rooturl])
+    adjdict = {rooturl:[]}
+    depths={rooturl:0}
     try:
         while stack:
-            vertex = stack.pop()
-            depth=depthmap[vertex]
-            if vertex in visited:
+            currnode = urljoin(rooturl,stack.popleft())
+            currdepth = depths[currnode]
+            if currnode in history:
                 continue
-            #loop over all the pages that my current page connects to
-            visited[vertex]=set()
-            try:
-                if vertex in __pagecache__:
-                    links=__pagecache__[vertex]
+            if verbose>0:
+                print "({}) NODE URL: {}".format(currdepth,currnode)
+            if not currnode in __pagecache__:
+                try:
+                    page = requests.get(currnode)
+                    # Extract target links from current node
+                    tree = BeautifulSoup(page.text,'lxml')
+                    links=[urljoin(rooturl,urldefrag(x['href'])[0]) for x in tree.findAll('a',href=True)]
+                except requests.ConnectionError:
+                    errorpages.add(currnode)
+                    print "Connection error: {}".format(currnode)
+                    continue
+            else:
+                links=__pagecache__[currnode]
+
+
+            for link in links:
+                if not all([p.match(link) for p in patterns]):
+                    continue
                 else:
-                    links=parse_links(vertex, url_start,**kwargs)
-                for url in links:
-                    # Checks to make sure it is not a bad page
-                    if (depth>=maxdepth and maxdepth!=None):
-                        pass
-                    else:
-                        depthmap[url]=depth+1
-                        stack.append(url)
-                        visited[vertex].add(url)
-            except UnicodeWarning,e:
-                if kwargs.get('verbose')>0:
-                    print "Error {} on {}".format(e,vertex)
-                continue
-            i+=1
-            if kwargs.get('verbose')>1:
-                #progress output
-                sys.stdout.flush()
-                statusstr='Depth: {:5d}, Iteration: {:5d}, Visiting... {:>96}'.format(depth,i,vertex)
-                statusstr=statusstr.zfill(200-len(statusstr))
-                sys.stdout.write(statusstr)
-                sys.stdout.write('\b'*len(statusstr))
-                sys.stdout.flush()
+                    targetlist.append(link)
+                    if verbose>1:
+                        print "Link match: ",link
+            # update list of visited nodes
+            history.add(currnode)
+
+            if currnode not in adjdict:
+                adjdict[currnode] = []
+
+            # add suitable neighbors to stack
+            for link in links:
+                if link not in adjdict[currnode]:
+                    adjdict[currnode].append(link)
+                patternmatch=[p.match(link) for p in patterns]
+                if link not in history and all(patternmatch) and currdepth+1<=maxdepth:
+                    stack.append(link)
+                    depths[link]=currdepth+1
     except KeyboardInterrupt:
-        pass
-    if kwargs.get('verbose')>0:
-        print "#Vertices: %d"%len(visited)
-        print "#Edges:    %d"%len(visited.values())
-    sys.stdout.flush()
-    writeCache(visited,cachefile)
-    return visited
+        print "Stopping..."
+    except:
+        print "Error occured"
+        ERROR=True
+        exc_info = sys.exc_info()
+        if exc_info[0]:
+            print exc_info
+            print traceback.format_exc()
+        if kwargs.get('debug'):
+            import pdb;
+            pdb.set_trace()
+        if kwargs.get('cachefile'):
+            writeCache(adjdict,kwargs.get('cachefile'))
+    return adjdict
+
 
 def readCache(cachefile,resetcache,verbose=0):
     if not cachefile or resetcache:
@@ -156,38 +115,26 @@ def writeCache(__pagecache__,cachefile,verbose=1):
     except IOError,e:
         print "Failure to write cachefile to: {}. Found this message: {}".format(cachefile,e)
 
-def generateTransitionMatrix(adjlist,**kwargs):
-    """
-    Converts an adjacency list to an adjacency matrix,
-    with the modification that each row sums to one.
 
-    """
-    num_pages=float(len(adjlist))
-    pagematrix = np.zeros([num_pages,num_pages])
-    if kwargs.get('verbose')>0:
-        print 'Number of nodes: %d'%pagematrix.shape[0]
-    for i,page in enumerate(adjlist):
-        url_list = adjlist[page]
-        url_list = set.intersection(url_list,adjlist)
-        num_transitions=0
-        for j,transitionpage in enumerate(adjlist):
-            if transitionpage in url_list:
-                pagematrix[i,j]=1
-                num_transitions+=1
-
-        if num_transitions>0:
-            pagematrix[i]*=1./num_transitions
-    return pagematrix
+def generateTransitionMatrix(adjdict):
+    nodes=dict(zip(adjdict.keys(),np.arange(len(adjdict))))
+    adjmat=np.zeros((len(nodes),len(nodes)))
+    i=0
+    slices=[]
+    for node in nodes:
+        for node2 in adjdict[node]:
+            if node2 not in nodes:
+                continue
+            j=nodes[node2]
+            adjmat[i,j]=1
+        i+=1
+    emptystates=~np.all(adjmat == 0, axis=1)
+    adjmat = adjmat[emptystates,:][:,emptystates]
+    return adjmat/adjmat.sum(axis=1,keepdims=True)
 
 def rankProfessors(adjlist,ssprobs,keywords,**kwargs):
     #Uses the code provided to search each url for each professor and update
     #the dictionary according to the rank of each page rather than simply adding one
-    if kwargs.get('cachefile')!=None:
-        __cache__ = readCache('kwd'+kwargs.get('cachefile'))
-        profdict = __cache__
-    else:
-        profdict = {}
-
     profs=keywords
     for i in profs:
         profdict[i] = 0
@@ -202,10 +149,7 @@ def rankProfessors(adjlist,ssprobs,keywords,**kwargs):
     if kwargs.get('verbose')>0:
         for i in range(len(prof_ranks)):
             print "%d: %s" % (i+1, prof_ranks[i])
-    if cachefile!=None:
-        cachefile="kwd"+kwargs.get('cachefile')
-        writeCache(profdict,cachefile)
-    return profdict
+    return profdict.items()
 
 def steadystate(transition_matrix):
     """
@@ -231,16 +175,17 @@ def main(**kwargs):
     verbose
 
     """
-    url_start = kwargs.get("home")
+    url_start = kwargs.get('home')
+    patterns = kwargs.get('patterns')
     keywords=kwargs.get('keywords')
     tstart=time.clock()
-    adjlist = dfs(url_start,**kwargs);
+    adjlist = scrape(url=url_start,**kwargs);
     elapsed=time.clock()-tstart
     if kwargs.get('verbose')>0:
         print "Done!"
         print "Scraped {} pages in {} seconds".format(len(adjlist),elapsed)
         print "Computing eigenvectors..."
-    pagematrix=generateTransitionMatrix(adjlist,**kwargs)
+    pagematrix=generateTransitionMatrix(adjlist)
     result=steadyprobs=steadystate(pagematrix)
     if kwargs.get('verbose')>0:
         print 'Calculated steady state probabilities: '
@@ -250,7 +195,7 @@ def main(**kwargs):
             print 'Ranking...'
         if kwargs.get('verbose')>1:
             print 'Keywords... {}'.format(keywords)
-        result=rankProfessors(adjlist,steadyprobs,keywords,**kwargs)
+        result=rankProfessors(adjlist,steadyprobs,**kwargs)
     return result
 
 def parsearguments(args):
@@ -261,8 +206,10 @@ def parsearguments(args):
     """
 
     mainParser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,description=descstr)
-    mainParser.add_argument('keywords',type=argparse.FileType('r'),nargs='?',default=sys.stdin,help="file containing keywords to rank")
-    mainParser.add_argument('-H','--home',nargs='?',type=str,help="the url to start at",default="http://www.eecs.berkeley.edu/Research/Areas/")
+    mainParser.add_argument('keywords',type=argparse.FileType('r'),default=sys.stdin,help="file containing keywords to rank")
+    mainParser.add_argument('-H','--home',type=str,help="the url to start at",default="http://www.eecs.berkeley.edu/Research/Areas/")
+    mainParser.add_argument('-p','--patterns',type=str,help="a list of regular expressions that will be matched against encountered links to determine (in part) whether or not they should be followed",default=[".*\.eecs.berkeley.edu/.*"])
+    mainParser.add_argument('-P','--patternfile',help="instead of reading the patterns from the command line, they will be read from the specified file",type=argparse.FileType('r'),default=None)
     mainParser.add_argument('-R','--reset-cache',action="store_true",default=False)
     mainParser.add_argument('-O','--output',type=argparse.FileType('w'),default=sys.stdout,help='file to store output contents to')
     mainParser.add_argument('-S','--scrape-only',default=False,action="store_true",help='forgoes professor-ranking')
@@ -272,6 +219,8 @@ def parsearguments(args):
     parsedargs = mainParser.parse_args(args)
     keywordsfile=parsedargs.keywords
     parsedargs.keywords=[m.strip() for m in parsedargs.keywords]
+    if parsedargs.patternfile!=None:
+        parsedargs.patterns=[p.strip() for p in parsedargs.patternfile if p.strip()[0]!="#"]
     if parsedargs.verbose>0:
         print parsedargs
     return parsedargs
