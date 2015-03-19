@@ -136,6 +136,7 @@ def rankProfessors(adjlist,ssprobs,keywords,**kwargs):
     #Uses the code provided to search each url for each professor and update
     #the dictionary according to the rank of each page rather than simply adding one
     profs=keywords
+    profdict={}
     for i in profs:
         profdict[i] = 0
     url_list=adjlist.keys()
