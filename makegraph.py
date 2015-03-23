@@ -9,6 +9,14 @@ from urlparse import urlparse,urljoin,urldefrag
 bad_filenames=['login.html','admin.html']
 acceptable_extensions=['.html','.htm','.php','.asp','.aspx','']
 acceptable_schemes=['http']
+headers={'User-Agent':'Mozilla/5.0 (Windows NT 6.3; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2272.89 Safari/537.36'}
+
+def visible(element):
+    if element.parent.name in ['style', 'script', '[document]', 'head', 'title']:
+        return False
+    elif re.match('<!--.*-->', element.string):
+        return False
+    return True
 
 def generatepatterns():
     make_disjunction=lambda lst:'|'.join(map(re.escape,lst))
@@ -45,11 +53,11 @@ def scrape(**kwargs):
             currdepth = depths[currnode]
             if currnode in history:
                 continue
-            if verbose>1:
-                print "({}) NODE URL: {}".format(currdepth,currnode.encode('utf','ignore'))
             if not currnode in __pagecache__:
                 try:
-                    page = requests.get(currnode,timeout=kwargs.get("timeout"))
+                    if verbose>0:
+                        print "({}) FRESH NODE URL: {}".format(currdepth,currnode.encode('utf'))
+                    page = requests.get(currnode,timeout=kwargs.get("timeout"),headers=headers)
                     text = page.text
                     __pagecache__[currnode] = text
                     # Extract target links from current node
@@ -59,6 +67,8 @@ def scrape(**kwargs):
                     continue
             else:
                 text = __pagecache__[currnode]
+                if verbose>1:
+                    print "({}) CACHED NODE URL: {}".format(currdepth,currnode.encode('utf'))
             tree = BeautifulSoup(text,'lxml')
             # append link to home address and "defrag" (strip hashtag anchors)
             links=[urljoin(rooturl,urldefrag(x['href'])[0]) \
@@ -84,7 +94,7 @@ def scrape(**kwargs):
                 adjdict[currnode].append(link)
                 if link not in history and link not in stack and currdepth+1<=maxdepth:
                     if verbose>2:
-                        print "Link match: {}".format(link.encode('utf','ignore'))
+                        print "Link match: {}".format(link.encode('utf'))
                     stack.append(link)
                     depths[link]=currdepth+1
     except KeyboardInterrupt:
@@ -181,64 +191,68 @@ def generateTransitionMatrix(adjdict,normalizerows=True):
     return adjmat,nodes
 
 
-def rankKeywords(pagelist,ssprobs,keywords=[],**kwargs):
+def rankKeywords(pagelist,ssprobs,**kwargs):
     """
     rankKeywords(pagelist,ssprobs,keywords=[],**kwargs)
 
-    If the keywords argument is left blank, this function can be used to scrape and rank n-grams
+    If the keywordpatterns argument is left blank, this function can be used to scrape and rank n-grams
 
     Parameters
     ---------
-    numletters - the minimum number of letters required for a word to be included in the n-gram
-    numwords - the 'n' in 'n-gram'
+    minletters - the minimum number of letters required for a word to be included in the n-gram
+    ngram - the 'n' in 'n-gram'
+    maxdisplay - the maximum number of keywords to output if 'verbose' is on
 
     """
-    #Uses the code provided to search each url for each professor and update
+    #Uses the code provided to search each url for each keyword and update
     #the dictionary according to the rank of each page rather than simply adding one
     __pagecache__=readCache(kwargs.get('cachefile'),**kwargs)
-    profs=keywords
-    keywords=[re.compile(r"\b{}\b".format(k),re.I) for k in keywords]
-    profdict={}
-    for i in profs:
-        profdict[i] = 0.
+    maxdisplay = kwargs.get("maxdisplay",100)
+    keywords=kwargs.get("keywords",[])
+    keywordpatterns=[re.compile(r"\b{}\b".format(k),re.I) for k in keywords]
+    keyworddict={}
+    for i in keywords:
+        keyworddict[i] = 0.
     url_list=pagelist
     all_words={}
 
-    minletters = kwargs.get('numletters',4)
-    numwords = kwargs.get('numwords',1)
-    all_wordpattern=re.compile(' '.join([('(\w{%d,})'%minletters) for x in xrange(numwords)]))
+    minletters = kwargs.get('minletters',4)
+    maxletters = 45
+    numwords = kwargs.get('ngram',1)
+    all_wordpattern=re.compile('(?={})'.format(' '.join([(r"\b(\w{%d,%d})\b"%(minletters,maxletters)) for x in xrange(numwords)])))
     for i,url in enumerate(url_list):
         if url in __pagecache__:
             text = __pagecache__[url]
         else:
             try:
-                page = requests.get(url,timeout=kwargs.get('timeout'))
+                page = requests.get(url,timeout=kwargs.get('timeout'),headers=headers)
                 text = page.text
                 page.close()
             except requests.RequestException:
                 continue
-        text=BeautifulSoup(text).text
-        if not keywords:
+        bs=BeautifulSoup(text)
+        text = ' '.join(filter(visible,bs.findAll(text=True)))
+        if not keywordpatterns:
             for word in all_wordpattern.findall(text):
                 if word not in all_words:
                     all_words[word]=0
                 all_words[word] += 100*ssprobs[i]
         else:
-            for p,pattern in zip(profs,keywords):
+            for p,pattern in zip(keywords,keywordpatterns):
                 matches=pattern.findall(text)
                 if not matches:
                     continue
                 nummatches = len(matches)
                 # scale by 100 to avoid decimation
-                profdict[p] += 100*ssprobs[i]*nummatches
-    if keywords:
-        prof_ranks = [pair for pair in sorted(profdict.items(), key=lambda item: item[1], reverse=True)]
-        if kwargs.get('verbose')>0:
-            for i in range(len(prof_ranks)):
-                print "%d: %s" % (i+1, prof_ranks[i])
-        return prof_ranks
-    else:
-        keyword_ranks = all_words
+                keyworddict[p] += 100*ssprobs[i]*nummatches
+    if not keywordpatterns:
+        keyworddict=all_words
+    keyword_ranks = [(x,y) for x,y in sorted(keyworddict.items(), key=lambda item: item[1], reverse=True)]
+    if numwords>1:
+        keyword_ranks = [(' '.join(x),y) for x,y in keyword_ranks]
+    if kwargs.get('verbose')>0:
+        for i in range(min(maxdisplay,len(keyword_ranks))):
+            print "%d: %s | %.4g" % (i+1, keyword_ranks[i][0], keyword_ranks[i][1])
         return keyword_ranks
 
 def steadystate(transition_matrix):
@@ -256,7 +270,7 @@ def main(**kwargs):
     -Scrapes links into a transition matrix.
     -Determines the system's steady state probabiliti or resetcaches.
     -Weights occurance of profressor's names on each page in order to
-    calculate a "score" for each professor.
+    calculate a "score" for each kewords.
 
     Keyword arguments:
     home - url to begin scraping at
@@ -304,20 +318,22 @@ def parsearguments(args):
     descstr="""
     Scrapes links into a transition matrix, determines the system's steady
     state probabilities, then weights occurance of profressor's names on
-    each page in order to calculate a "score" for each professor.
+    each page in order to calculate a "score" for each keyword.
     """
 
     mainParser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,description=descstr)
-    mainParser.add_argument('--keywords',type=argparse.FileType('r'),default=[],help="file containing keywords to rank")
-    mainParser.add_argument('-H','--home',type=str,help="the url to start at",default="http://www.eecs.berkeley.edu/Research/Areas/")
+    mainParser.add_argument('home',type=str,help="the url to start at")
+    mainParser.add_argument('keywords',type=argparse.FileType('r'),default=[],nargs="?",help="file containing keywords to rank")
+    mainParser.add_argument('-n','--ngram',default=1,type=int,help="ngram size to scrape if keywords are not probided")
+    mainParser.add_argument('-m','--min-letters',default=1,type=int,help="minimum number of letters required to include a word into an ngram")
     mainParser.add_argument('-p','--patterns',type=str,help="a list of \
             regular expressions that will be matched against encountered \
             links to determine (in part) whether or not they should be \
-            followed",nargs='*',default=[".*\.eecs.berkeley.edu/.*"])
+            followed",nargs='*',default=[])
     mainParser.add_argument('-P','--patternfile',help="instead of reading the patterns from the command line, they will be read from the specified file",type=argparse.FileType('r'),default=None)
     mainParser.add_argument('-R','--reset-cache',action="store_true",default=False)
-    mainParser.add_argument('-O','--output',type=argparse.FileType('w'),default=None,help='file to store output contents to')
-    mainParser.add_argument('-S','--scrape-only',default=False,action="store_true",help='forgoes professor-ranking')
+    mainParser.add_argument('-O','--output',type=argparse.FileType('w'),default="lastrun.json",help='file to store output contents to')
+    mainParser.add_argument('-S','--scrape-only',default=False,action="store_true",help='forgoes keyword-ranking')
     mainParser.add_argument('-c','--cachefile',type=str,help="location of  file (used to store adj list).",default="__pagecache__.pkl")
     mainParser.add_argument('-d','--maxdepth',default=1,type=int,help="the maximum recursion level")
     mainParser.add_argument('-t','--timeout',default=None,type=float,help="max seconds to spend loading page before moving on")
