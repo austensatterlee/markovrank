@@ -352,7 +352,7 @@ def parsearguments(args):
     parsedargs = mainParser.parse_args(args)
     if parsedargs.keywords:
         if re.match('^file:.*',parsedargs.keywords):
-            keywordsfile=parsedargs.keywords
+            keywordsfile=parsedargs.keywords.lstrip('file:')
             parsedargs.keywords = open(keywordsfile).readlines()
         else:
             parsedargs.keywords = parsedargs.keywords.split(',')
