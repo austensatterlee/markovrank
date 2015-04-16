@@ -208,8 +208,13 @@ def rankKeywords(pagelist,ssprobs,**kwargs):
     #the dictionary according to the rank of each page rather than simply adding one
     __pagecache__=readCache(kwargs.get('cachefile'),**kwargs)
     maxdisplay = kwargs.get("maxdisplay",100)
-    keywords=kwargs.get("keywords",[])
-    keywordpatterns=[re.compile(r"\b{}\b".format(k),re.I) if isinstance(k,str) else k for k in keywords]
+    keywords=kwargs.get("keywords",None) or []
+    keywordpatterns=[]
+    for k in keywords:
+        if k.startswith("#"):
+            keywordpatterns.append(re.compile(r"{}".format(k[1:]),re.I))
+        else:
+            keywordpatterns.append(re.compile(r"\b{}\b".format(k),re.I))
     keyworddict={}
     appearancedict={}
     for i in keywords:
@@ -222,6 +227,7 @@ def rankKeywords(pagelist,ssprobs,**kwargs):
     maxletters = 45
     numwords = kwargs.get('ngram',1)
     all_wordpattern=re.compile('(?={})'.format(' '.join([(r"\b(\w{%d,%d})\b"%(minletters,maxletters)) for x in xrange(numwords)])))
+    print [k.pattern for k in keywordpatterns]
     for i,url in enumerate(url_list):
         if url in __pagecache__:
             text = __pagecache__[url]
@@ -256,7 +262,7 @@ def rankKeywords(pagelist,ssprobs,**kwargs):
     if kwargs.get('verbose')>0:
         for i in range(min(maxdisplay,len(keyword_ranks))):
             print "%d: %s | %.4g" % (i+1, keyword_ranks[i][0], keyword_ranks[i][1])
-        return keyword_ranks, appearancedict
+    return keyword_ranks, appearancedict
 
 def steadystate(transition_matrix):
     """
@@ -327,7 +333,7 @@ def parsearguments(args):
 
     mainParser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,description=descstr)
     mainParser.add_argument('home',type=str,help="the url to start at")
-    mainParser.add_argument('keywords',type=str,default=None,nargs="?",help="file containing keywords to rank")
+    mainParser.add_argument('--keywords',type=str,default=None,help="file containing keywords to rank")
     mainParser.add_argument('-n','--ngram',default=1,type=int,help="ngram size to scrape if keywords are not probided")
     mainParser.add_argument('-m','--min-letters',default=1,type=int,help="minimum number of letters required to include a word into an ngram")
     mainParser.add_argument('-p','--patterns',type=str,help="a list of \
@@ -344,12 +350,13 @@ def parsearguments(args):
     mainParser.add_argument('-v','--verbose',type=int,default=0,help="set verbosity level (0 and up)")
     mainParser.add_argument('--debug',action='store_true',default=False,help="debug mode")
     parsedargs = mainParser.parse_args(args)
-    if re.match('^file:.*',parsedargs.keywords):
-        keywordsfile=parsedargs.keywords
-        parsedargs.keywords = open(keywordsfile).readlines()
-    else:
-        parsedargs.keywords = parsedargs.keywords.split(',')
-    parsedargs.keywords=[m.strip() for m in parsedargs.keywords]
+    if parsedargs.keywords:
+        if re.match('^file:.*',parsedargs.keywords):
+            keywordsfile=parsedargs.keywords
+            parsedargs.keywords = open(keywordsfile).readlines()
+        else:
+            parsedargs.keywords = parsedargs.keywords.split(',')
+        parsedargs.keywords=[m.strip() for m in parsedargs.keywords]
     if parsedargs.patternfile!=None:
         parsedargs.patterns=[p.strip() for p in parsedargs.patternfile if p.strip()[0]!="#"]
     if parsedargs.verbose>0:
