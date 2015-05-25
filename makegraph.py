@@ -6,10 +6,10 @@ import argparse,traceback,time
 from collections import Counter,deque
 from urlparse import urlparse,urljoin,urldefrag
 
-bad_filenames=['login.html','admin.html']
-acceptable_extensions=['.html','.htm','.php','.asp','.aspx','']
-acceptable_schemes=['http']
-headers={'User-Agent':'Mozilla/5.0 (Windows NT 6.3; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2272.89 Safari/537.36'}
+BAD_FILENAMES=['login.html','admin.html']
+ACCEPTABLE_EXTENSIONS=['.html','.htm','.php','.asp','.aspx','']
+ACCEPTABLE_SCHEMES=['http']
+HEADERS={'User-Agent':'Mozilla/5.0 (Windows NT 6.3; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2272.89 Safari/537.36'}
 
 def visible(element):
     if element.parent.name in ['style', 'script', '[document]', 'head', 'title']:
@@ -21,8 +21,11 @@ def visible(element):
 def generatepatterns(**kwargs):
     make_disjunction=lambda lst:'|'.join(map(re.escape,lst))
     patterns=[]
-#    patterns.append("^.*\/({})$".format(make_disjunction(acceptable_extensions)))
-    patterns.append("^({}).*$".format(make_disjunction(acceptable_schemes)))
+    if kwargs.get('schemes'):
+        patterns.append("^({}).*$".format(make_disjunction(kwargs['schemes'])))
+    if kwargs.get('domain'):
+        domain = re.search('(.*\.)?(.*\..*)',kwargs.get('domain')).groups()[1]
+        patterns.append("([^ ]*{}[^ ]*)".format(re.escape(domain)))
     return patterns
 
 def scrape(**kwargs):
@@ -34,10 +37,10 @@ def scrape(**kwargs):
     patterns - a list of regular expressions to match links against
 
     """
-    rooturl,patterns,maxdepth,verbose=map(kwargs.get,'url,patterns,maxdepth,verbose'.split(','))
+    rooturl,patterns,maxdepth,verbose,restrict_domain=map(kwargs.get,'url,patterns,maxdepth,verbose,restrict_domain'.split(','))
 
     __pagecache__ = readCache(kwargs.get('cachefile'),**kwargs)
-    patterns.extend(generatepatterns())
+    patterns.extend(generatepatterns(schemes=ACCEPTABLE_SCHEMES,domain=(rooturl if restrict_domain else None)))
     if verbose>3:
         print "Using patterns: {}".format(patterns)
     patterns=[re.compile(p,re.I) for p in patterns]
@@ -47,6 +50,7 @@ def scrape(**kwargs):
     adjdict = {rooturl:[]}
     depths={rooturl:0}
     errorpages=set()
+    cacheIsDirty = False
     try:
         while stack:
             currnode = urljoin(rooturl,stack.popleft())
@@ -57,10 +61,10 @@ def scrape(**kwargs):
                 try:
                     if verbose>0:
                         print "({}) FRESH NODE URL: {}".format(currdepth,currnode.encode('utf'))
-                    page = requests.get(currnode,timeout=kwargs.get("timeout"),headers=headers)
+                    page = requests.get(currnode,timeout=kwargs.get("timeout"),headers=HEADERS)
                     text = page.text
                     __pagecache__[currnode] = text
-                    # Extract target links from current node
+                    cacheIsDirty = True
                 except requests.RequestException,e:
                     errorpages.add(currnode)
                     print "Connection error: {}".format(currnode)
@@ -88,8 +92,8 @@ def scrape(**kwargs):
                 filename+=ext
                 adjdict[currnode].append(link)
                 patternmatch=[True if p.match(link) else False for p in patterns]
-                patternmatch.append(ext in acceptable_extensions)
-                patternmatch.append(filename not in bad_filenames)
+                patternmatch.append(ext in ACCEPTABLE_EXTENSIONS)
+                patternmatch.append(filename not in BAD_FILENAMES)
                 if not np.all(patternmatch):
                     continue
                 if link not in history and link not in stack and currdepth+1<=maxdepth:
@@ -113,7 +117,7 @@ def scrape(**kwargs):
     for key in adjdict.keys():
         if not len(adjdict[key]):
             adjdict.pop(key)
-    if kwargs.get('cachefile'):
+    if kwargs.get('cachefile') and cacheIsDirty:
         writeCache(__pagecache__,kwargs.get('cachefile'),**kwargs)
     return adjdict
 
@@ -193,7 +197,7 @@ def generateTransitionMatrix(adjdict,normalizerows=True):
 
 def rankKeywords(pagelist,ssprobs,**kwargs):
     """
-    rankKeywords(pagelist,ssprobs,keywords=[],**kwargs)
+    rankKeywords(pagelist,ssprobs,**kwargs)
 
     If the `keywords` argument is left blank, this function can be used to scrape and rank n-grams
 
@@ -202,24 +206,22 @@ def rankKeywords(pagelist,ssprobs,**kwargs):
     minletters - the minimum number of letters required for a word to be included in the n-gram
     ngram - the 'n' in 'n-gram'
     maxdisplay - the maximum number of keywords to output if 'verbose' is on
+    keywords - list of keywords or patterns (prefixed by forward slash)
 
     """
-    #Uses the code provided to search each url for each keyword and update
-    #the dictionary according to the rank of each page rather than simply adding one
     __pagecache__=readCache(kwargs.get('cachefile'),**kwargs)
     maxdisplay = kwargs.get("maxdisplay",100)
-    keywords=kwargs.get("keywords",None) or []
+    keywords=kwargs.get("keywords",[])
+    verbose = kwargs.get('verbose')
     keywordpatterns=[]
     for k in keywords:
-        if k.startswith("#"):
-            keywordpatterns.append(re.compile(r"{}".format(k[1:]),re.I))
+        k=k.strip()
+        if k.startswith("/"):
+            keywordpatterns.append(re.compile("{}".format(k[1:]),re.I))
         else:
             keywordpatterns.append(re.compile(r"\b{}\b".format(k),re.I))
     keyworddict={}
     appearancedict={}
-    for i in keywords:
-        keyworddict[i] = 0.
-        appearancedict[i] = []
     url_list=pagelist
     all_words={}
 
@@ -227,33 +229,39 @@ def rankKeywords(pagelist,ssprobs,**kwargs):
     maxletters = 45
     numwords = kwargs.get('ngram',1)
     all_wordpattern=re.compile('(?={})'.format(' '.join([(r"\b(\w{%d,%d})\b"%(minletters,maxletters)) for x in xrange(numwords)])))
-    print [k.pattern for k in keywordpatterns]
+
+    if verbose:
+        for keywordpattern in keywordpatterns:
+            print keywordpattern.pattern
+
     for i,url in enumerate(url_list):
         if url in __pagecache__:
             text = __pagecache__[url]
         else:
             try:
-                page = requests.get(url,timeout=kwargs.get('timeout'),headers=headers)
+                page = requests.get(url,timeout=kwargs.get('timeout'),headers=HEADERS)
                 text = page.text
                 page.close()
             except requests.RequestException:
                 continue
         bs=BeautifulSoup(text)
-        text = ' '.join(bs.stripped_strings);#' '.join(filter(visible,bs.findAll(text=True)))
+        #text = ' '.join(bs.stripped_strings);#' '.join(filter(visible,bs.findAll(text=True)))
         if not keywordpatterns:
             for word in all_wordpattern.findall(text):
                 if word not in all_words:
                     all_words[word]=0
                 all_words[word] += 100*ssprobs[i]
         else:
-            for p,pattern in zip(keywords,keywordpatterns):
+            for pattern in keywordpatterns:
                 matches=pattern.findall(text)
-                if not matches:
-                    continue
-                nummatches = len(matches)
-                # scale by 100 to avoid decimation
-                keyworddict[p] += 100*ssprobs[i]*nummatches
-                appearancedict[p].append(url)
+                for match in matches:
+                    if match not in keyworddict:
+                        keyworddict[match] = 0.0
+                    if match not in appearancedict:
+                        appearancedict[match] = []
+                    # scale by 100 to avoid decimation
+                    keyworddict[match] += 100*ssprobs[i]
+                    appearancedict[match].append(url)
     if not keywordpatterns:
         keyworddict=all_words
     keyword_ranks = [(x,y) for x,y in sorted(keyworddict.items(), key=lambda item: item[1], reverse=True)]
@@ -277,7 +285,7 @@ def main(**kwargs):
     """
     Performs the following tasks:
     -Scrapes links into a transition matrix.
-    -Determines the system's steady state probabiliti or resetcaches.
+    -Determines the system's steady state probabilities.
     -Weights occurance of profressor's names on each page in order to
     calculate a "score" for each kewords.
 
@@ -285,6 +293,7 @@ def main(**kwargs):
     home - url to begin scraping at
     cachefile - storage for adjacency list
     reset_cache - refreshes cache
+    restrict_domain - restricts domain to that of the home url
     verbose
 
     """
@@ -333,9 +342,11 @@ def parsearguments(args):
 
     mainParser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,description=descstr)
     mainParser.add_argument('home',type=str,help="the url to start at")
-    mainParser.add_argument('--keywords',type=str,default=None,help="file containing keywords to rank")
+    mainParser.add_argument('--keywords',type=str,default=None,help="comma-separated list of keywords to rank")
+    mainParser.add_argument('--keywords-file',type=str,default=None,help="keywords file")
     mainParser.add_argument('-n','--ngram',default=1,type=int,help="ngram size to scrape if keywords are not probided")
     mainParser.add_argument('-m','--min-letters',default=1,type=int,help="minimum number of letters required to include a word into an ngram")
+    mainParser.add_argument('-D','--restrict-domain',default=False,action='store_true',help="don't crawl outside the original domain")
     mainParser.add_argument('-p','--patterns',type=str,help="a list of \
             regular expressions that will be matched against encountered \
             links to determine (in part) whether or not they should be \
@@ -351,12 +362,11 @@ def parsearguments(args):
     mainParser.add_argument('--debug',action='store_true',default=False,help="debug mode")
     parsedargs = mainParser.parse_args(args)
     if parsedargs.keywords:
-        if re.match('^file:.*',parsedargs.keywords):
-            keywordsfile=parsedargs.keywords.lstrip('file:')
-            parsedargs.keywords = open(keywordsfile).readlines()
-        else:
-            parsedargs.keywords = parsedargs.keywords.split(',')
-        parsedargs.keywords=[m.strip() for m in parsedargs.keywords]
+        parsedargs.keywords = parsedargs.keywords.split(',')
+    elif parsedargs.keywords_file:
+        parsedargs.keywords = open(parsedargs.keywords_file,'rb').readlines()
+    parsedargs.keywords=[m.strip() for m in parsedargs.keywords]
+
     if parsedargs.patternfile!=None:
         parsedargs.patterns=[p.strip() for p in parsedargs.patternfile if p.strip()[0]!="#"]
     if parsedargs.verbose>0:
