@@ -286,8 +286,8 @@ def main(**kwargs):
     Performs the following tasks:
     -Scrapes links into a transition matrix.
     -Determines the system's steady state probabilities.
-    -Weights occurance of profressor's names on each page in order to
-    calculate a "score" for each kewords.
+    -Weights occurance of ngram son each page in order to
+    calculate a "score" for each ngram.
 
     Keyword arguments:
     home - url to begin scraping at
@@ -363,9 +363,12 @@ def parsearguments(args):
     parsedargs = mainParser.parse_args(args)
     if parsedargs.keywords:
         parsedargs.keywords = parsedargs.keywords.split(',')
+        parsedargs.keywords=[m.strip() for m in parsedargs.keywords]
     elif parsedargs.keywords_file:
         parsedargs.keywords = open(parsedargs.keywords_file,'rb').readlines()
-    parsedargs.keywords=[m.strip() for m in parsedargs.keywords]
+        parsedargs.keywords=[m.strip() for m in parsedargs.keywords]
+    else:
+        parsedargs.keywords = []
 
     if parsedargs.patternfile!=None:
         parsedargs.patterns=[p.strip() for p in parsedargs.patternfile if p.strip()[0]!="#"]
